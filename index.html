@@ -1,0 +1,953 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>EPOC X Raw Capture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: lab-instrument console — fixed header, scrolling body of stacked panels,
+     a live 14-lane strip chart as the centrepiece, mono data readouts throughout. */
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --panel-2: #eceef1;
+    --ink: #1a1d23;
+    --ink-soft: #5b6472;
+    --line: #d4d8de;
+    --accent: #1f6f6b;      /* saline teal */
+    --accent-soft: #e2efee;
+    --live: #c2410c;        /* recording ember */
+    --good: #2f8f46;
+    --warn: #b8860b;
+    --bad: #c0392b;
+    --trace: #1f6f6b;
+    --mono: 'Jetbrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c;
+      --panel: #1c2026;
+      --panel-2: #22272e;
+      --ink: #e7eaef;
+      --ink-soft: #99a2b0;
+      --line: #313843;
+      --accent: #4bb5ae;
+      --accent-soft: #19302e;
+      --live: #f0763f;
+      --good: #58c278;
+      --warn: #d6a93a;
+      --bad: #e86a5c;
+      --trace: #4bb5ae;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c;
+    --panel: #1c2026;
+    --panel-2: #22272e;
+    --ink: #e7eaef;
+    --ink-soft: #99a2b0;
+    --line: #313843;
+    --accent: #4bb5ae;
+    --accent-soft: #19302e;
+    --live: #f0763f;
+    --good: #58c278;
+    --warn: #d6a93a;
+    --bad: #e86a5c;
+    --trace: #4bb5ae;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .wrap {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0 48px;
+  }
+
+  /* Header */
+  header {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 20;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px);
+    z-index: 21;
+    background: var(--panel);
+  }
+  .head-inner {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .brand h1 {
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin: 0;
+    white-space: nowrap;
+  }
+  .brand .sub {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .status-chip {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-soft);
+    flex: none;
+  }
+  .status-chip.on .dot { background: var(--good); }
+  .status-chip.rec .dot { background: var(--live); animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) {
+    .status-chip.rec .dot { animation: none; }
+  }
+
+  /* Panels */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px;
+    margin-top: 18px;
+  }
+  .panel > h2 {
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--ink-soft);
+    margin: 0 0 14px;
+    font-weight: 650;
+  }
+
+  /* Controls */
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    font-weight: 550;
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--ink);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.07); }
+  button.rec { background: var(--live); border-color: var(--live); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .field label { font-size: 0.8rem; color: var(--ink-soft); }
+  input[type="text"] {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+    width: 15ch;
+    text-transform: uppercase;
+  }
+  input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  select {
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+  }
+
+  /* Metric row */
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .metric { background: var(--panel); padding: 12px 14px; }
+  .metric .k { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); }
+  .metric .v { font-family: var(--mono); font-size: 1.25rem; font-weight: 500; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .metric .v small { font-size: 0.7rem; color: var(--ink-soft); font-weight: 400; }
+  @media (max-width: 560px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+
+  /* Strip chart */
+  .chart-shell { position: relative; }
+  canvas { display: block; width: 100%; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 12px; }
+  .chan-tag {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--ink-soft);
+  }
+  .q-pip { width: 9px; height: 9px; border-radius: 2px; background: var(--line); flex: none; }
+  .q-pip.q0 { background: var(--bad); }
+  .q-pip.q1 { background: var(--warn); }
+  .q-pip.q2 { background: var(--warn); }
+  .q-pip.q3 { background: var(--good); }
+  .q-pip.q4 { background: var(--good); }
+
+  /* Log / notes */
+  .log {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-soft);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    max-height: 140px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log .err { color: var(--bad); }
+  .log .ok { color: var(--good); }
+
+  details.note { margin-top: 18px; }
+  details.note summary {
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 550;
+    color: var(--accent);
+    padding: 4px 0;
+  }
+  details.note summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .note-body { font-size: 0.84rem; color: var(--ink-soft); line-height: 1.6; }
+  .note-body p { margin: 10px 0; }
+  .note-body code { font-family: var(--mono); font-size: 0.82em; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+  .note-body strong { color: var(--ink); font-weight: 600; }
+
+  .warnbar {
+    font-size: 0.8rem;
+    color: var(--ink);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 13px;
+    margin-top: 18px;
+    line-height: 1.5;
+  }
+  .warnbar strong { color: var(--accent); }
+
+  .tabs { display: inline-flex; gap: 2px; background: var(--panel-2); border-radius: 8px; padding: 3px; border: 1px solid var(--line); }
+  .tabs button {
+    border: none; background: transparent; padding: 6px 13px; font-size: 0.8rem; border-radius: 6px; color: var(--ink-soft);
+  }
+  .tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .hint { font-size: 0.78rem; color: var(--ink-soft); margin-top: 10px; }
+  .unsupported { color: var(--bad); font-weight: 500; }
+</style>
+
+<header>
+  <div class="head-inner">
+    <div class="brand">
+      <h1>EPOC&nbsp;X Raw Capture</h1>
+      <span class="sub">14-ch · 256&nbsp;Hz · AES-ECB</span>
+    </div>
+    <div class="status-chip" id="statusChip"><span class="dot"></span><span id="statusText">Belum terhubung</span></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="warnbar" id="modeBar">
+    <strong>Mode koneksi.</strong> Pilih jalur sesuai cara headset tersambung ke komputer ini.
+  </div>
+
+  <!-- Connection -->
+  <section class="panel">
+    <h2>1 · Koneksi</h2>
+    <div class="controls" style="margin-bottom:14px">
+      <div class="tabs" role="tablist" aria-label="Mode transport">
+        <button role="tab" id="tab-hid" aria-selected="true" aria-controls="conn-body">USB dongle (WebHID)</button>
+        <button role="tab" id="tab-ble" aria-selected="false" aria-controls="conn-body">Bluetooth (Web Bluetooth)</button>
+      </div>
+    </div>
+
+    <div class="field" style="margin-bottom:14px">
+      <label for="serial">Serial headset</label>
+      <input type="text" id="serial" placeholder="mis. UD2021xxxxxx" maxlength="18" autocomplete="off" spellcheck="false">
+      <span class="hint" id="serialHint" style="margin-top:0">Kunci AES diturunkan dari serial. Lihat catatan di bawah.</span>
+    </div>
+
+    <div class="controls">
+      <button class="primary" id="connectBtn">Hubungkan perangkat</button>
+      <button id="disconnectBtn" disabled>Putuskan</button>
+    </div>
+    <p class="hint" id="supportHint"></p>
+  </section>
+
+  <!-- Live -->
+  <section class="panel">
+    <h2>2 · Monitor langsung</h2>
+    <div class="metrics" id="metrics">
+      <div class="metric"><div class="k">Paket/detik</div><div class="v" id="mRate">—</div></div>
+      <div class="metric"><div class="k">Counter</div><div class="v" id="mCounter">—</div></div>
+      <div class="metric"><div class="k">Baterai</div><div class="v" id="mBatt">—</div></div>
+      <div class="metric"><div class="k">Sinyal</div><div class="v" id="mSig">—</div></div>
+    </div>
+
+    <div class="chart-shell" style="margin-top:16px">
+      <canvas id="scope" height="420" aria-label="Strip chart 14 kanal EEG"></canvas>
+    </div>
+    <div class="chart-legend" id="legend"></div>
+    <p class="hint">Skala tiap lajur otomatis (auto-gain per kanal). Pip warna = kualitas kontak elektroda (merah buruk → hijau baik).</p>
+  </section>
+
+  <!-- Record -->
+  <section class="panel">
+    <h2>3 · Rekam</h2>
+    <div class="controls">
+      <button class="rec" id="recBtn" disabled>● Mulai rekam</button>
+      <button id="clearBtn" disabled>Kosongkan buffer</button>
+      <span class="status-chip" id="recChip"><span class="dot"></span><span id="recText">Siaga</span></span>
+    </div>
+    <div class="metrics" style="margin-top:14px; grid-template-columns: repeat(3,1fr)">
+      <div class="metric"><div class="k">Sampel terekam</div><div class="v" id="mSamples">0</div></div>
+      <div class="metric"><div class="k">Durasi</div><div class="v" id="mDur">0.0<small> s</small></div></div>
+      <div class="metric"><div class="k">Perkiraan ukuran</div><div class="v" id="mSize">0<small> KB</small></div></div>
+    </div>
+    <p class="hint">Rekaman ditahan di memori lalu diunduh sebagai CSV (kolom: timestamp, counter, 14 kanal µV, battery, + kualitas kontak). Buffer besar bisa memberati tab.</p>
+    <div class="controls" style="margin-top:14px">
+      <button id="saveBtn" disabled>Siapkan CSV</button>
+      <button id="copyBtn" disabled>Salin ke clipboard</button>
+      <button id="saveRawBtn" disabled>Siapkan paket mentah (hex)</button>
+    </div>
+    <p class="hint" id="dlHint">Di dalam jendela artifact, unduhan otomatis diblokir. Klik “Siapkan CSV”, lalu “Salin ke clipboard” atau seleksi teks di bawah dan simpan sebagai <code>.csv</code>. Jika Anda membuka file HTML ini langsung di browser (bukan via artifact), tombol akan mengunduh berkas.</p>
+    <textarea id="outArea" readonly hidden style="width:100%;margin-top:12px;min-height:120px;font-family:var(--mono);font-size:0.72rem;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:10px;resize:vertical"></textarea>
+  </section>
+
+  <!-- Log -->
+  <section class="panel">
+    <h2>4 · Log</h2>
+    <div class="log" id="log" aria-live="polite"></div>
+  </section>
+
+  <details class="note">
+    <summary>Catatan teknis & keterbatasan — baca sebelum dipakai untuk data riil</summary>
+    <div class="note-body">
+      <p><strong>Jalur USB dongle (WebHID) — direkomendasikan.</strong> EPOC X mengirim paket 32-byte terenkripsi AES-128-ECB lewat dongle USB. Kunci untuk mode dongle bersifat statis (tidak bergantung serial), jadi jalur ini paling andal. Butuh Chrome/Edge di desktop, dan di Windows biasanya perlu mengganti driver dongle ke WinUSB (lewat <code>Zadig</code>) agar WebHID bisa mengaksesnya.</p>
+      <p><strong>Jalur Bluetooth (Web Bluetooth).</strong> Paket dikirim lewat GATT service <code>00001100-…-a5a5</code>, dinotifikasi, lalu didekripsi dengan kunci yang <em>diturunkan dari serial</em>: 12 karakter serial + <code>"EX10"</code> → 16 byte kunci AES. Serial tidak bisa dibaca via BLE (karakteristik serial diblokir), jadi Anda harus mengisinya manual di kolom di atas. Launcher Emotiv harus ditutup dulu (satu koneksi pada satu waktu).</p>
+      <p><strong>Lock-on kunci.</strong> Untuk 14 kanal layout 16-bit, kunci salah pun tetap "terdekode" jadi angka. App ini memverifikasi kunci lewat <em>packet counter</em>: di bawah kunci benar, counter naik dengan langkah tetap; di bawah kunci salah, counter acak. Status "terkunci" muncul setelah 4 paket berurutan dengan langkah konsisten.</p>
+      <p><strong>Skala µV & kualitas kontak belum tervalidasi resmi.</strong> Konversi ADC→µV memakai rentang fisik model (±8399 µV) dan ekstraksi kualitas kontak disederhanakan. Untuk publikasi, bandingkan dulu terhadap rekaman EmotivPRO sebagai acuan. Ini alat untuk keperluan internal/eksplorasi, bukan pengganti perangkat tervalidasi.</p>
+      <p><strong>Legalitas.</strong> Membaca langsung dengan mem-bypass Cortex kemungkinan bertentangan dengan ToS Emotiv. Untuk riset internal umumnya wajar, tetapi periksa dulu bila hasil akan dipublikasikan.</p>
+      <p>Urutan kanal EPOC X: AF3, F7, F3, FC5, T7, P7, O1, O2, P8, T8, FC6, F4, F8, AF4.</p>
+    </div>
+  </details>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- Model constants (EPOC X) ----
+  const CHANNELS = ["AF3","F7","F3","FC5","T7","P7","O1","O2","P8","T8","FC6","F4","F8","AF4"];
+  const NCH = 14;
+  const SRATE = 256;
+  const PHYS_MIN = -8399.0, PHYS_MAX = 8399.0, DIG_MAX = 16383;
+  const PACKET_LEN = 32;
+  // Emotiv BLE UUIDs
+  const SVC_DATA = "00001100-d102-11e1-9b23-00025b00a5a5";
+  const SVC_CTRL = "00001101-d102-11e1-9b23-00025b00a5a5";
+
+  // Static key commonly used for EPOC-X-family USB dongle streams.
+  const DONGLE_KEY_HEX = "31003554381037423100354838003750";
+
+  // ---- State ----
+  let mode = "hid";          // "hid" | "ble"
+  let device = null;          // HIDDevice or { gatt, ... }
+  let bleChars = null;
+  let aesKey = null;          // CryptoKey
+  let keyLocked = false;
+  let lockBuf = [];           // recent counters for lock-on
+  let streaming = false;
+  let recording = false;
+
+  // ring buffers for scope (per channel)
+  const SCOPE_LEN = 512;
+  const scope = Array.from({length: NCH}, () => new Float32Array(SCOPE_LEN).fill(0));
+  let scopeHead = 0;
+  const contactQ = new Uint8Array(NCH);
+
+  // recording store
+  let rec = [];               // array of rows
+  let recRaw = [];            // array of hex strings
+  let recStartTs = 0;
+
+  // rate tracking
+  let pktCount = 0, lastRateT = performance.now(), ratePerSec = 0, lastCounter = null;
+
+  // ---- DOM ----
+  const $ = id => document.getElementById(id);
+  const logEl = $("log");
+  const statusChip = $("statusChip"), statusText = $("statusText");
+  const recChip = $("recChip"), recText = $("recText");
+
+  function log(msg, cls) {
+    const t = new Date().toLocaleTimeString();
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = `[${t}] ${msg}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.childElementCount > 200) logEl.removeChild(logEl.firstChild);
+  }
+
+  function setStatus(text, state) {
+    statusText.textContent = text;
+    statusChip.className = "status-chip" + (state ? " " + state : "");
+  }
+
+  // ---- Support detection ----
+  const hasHID = "hid" in navigator;
+  const hasBLE = "bluetooth" in navigator;
+  const hasSubtle = !!(crypto && crypto.subtle);
+
+  function updateSupportHint() {
+    const el = $("supportHint");
+    if (!hasSubtle) { el.innerHTML = '<span class="unsupported">Browser ini tidak menyediakan Web Crypto (crypto.subtle) — dekripsi tidak mungkin.</span>'; return; }
+    if (mode === "hid") {
+      el.innerHTML = hasHID
+        ? "WebHID tersedia. Sambungkan dongle USB EPOC X, lalu klik Hubungkan."
+        : '<span class="unsupported">WebHID tidak tersedia di browser ini. Pakai Chrome/Edge desktop, atau beralih ke mode Bluetooth.</span>';
+    } else {
+      el.innerHTML = hasBLE
+        ? "Web Bluetooth tersedia. Tutup Emotiv Launcher dulu, isi serial, lalu klik Hubungkan."
+        : '<span class="unsupported">Web Bluetooth tidak tersedia di browser ini. Pakai Chrome/Edge desktop.</span>';
+    }
+  }
+
+  // ---- Tabs ----
+  function selectMode(m) {
+    mode = m;
+    $("tab-hid").setAttribute("aria-selected", m === "hid");
+    $("tab-ble").setAttribute("aria-selected", m === "ble");
+    const bar = $("modeBar");
+    if (m === "hid") {
+      bar.innerHTML = '<strong>USB dongle.</strong> Kunci AES statis — kolom serial opsional (dipakai hanya bila dongle menolak kunci default). Paling andal.';
+      $("serialHint").textContent = "Opsional untuk mode USB.";
+    } else {
+      bar.innerHTML = '<strong>Bluetooth langsung.</strong> Kunci diturunkan dari serial (serial + "EX10"). Isi serial 12 karakter, tutup Emotiv Launcher dulu.';
+      $("serialHint").textContent = "Wajib untuk mode Bluetooth: 12 karakter.";
+    }
+    updateSupportHint();
+  }
+  $("tab-hid").addEventListener("click", () => selectMode("hid"));
+  $("tab-ble").addEventListener("click", () => selectMode("ble"));
+
+  // ---- Key derivation ----
+  function hexToBytes(hex) {
+    const a = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < a.length; i++) a[i] = parseInt(hex.substr(i*2, 2), 16);
+    return a;
+  }
+  function deriveKeyEpocX(serial) {
+    // EPOC X mode: serial[0..12] + "EX10"
+    const s = serial.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    if (s.length < 12) throw new Error("Serial minimal 12 karakter alfanumerik.");
+    const key = new Uint8Array(16);
+    for (let i = 0; i < 12; i++) key[i] = s.charCodeAt(i);
+    key[12] = 0x45; key[13] = 0x58; key[14] = 0x31; key[15] = 0x30; // 'E','X','1','0'
+    return key;
+  }
+  // ---- Minimal AES-128 decrypt (ECB, one block) ----
+  // Compact, self-contained; used because SubtleCrypto has no raw/no-pad ECB.
+  const jsAes = (() => {
+    let roundKeys = null;
+    const sbox = new Uint8Array(256), inv = new Uint8Array(256);
+    (function initSbox(){
+      let p=1,q=1;
+      do {
+        p = p ^ (p<<1) ^ (p&0x80?0x11b:0);
+        p &= 0xff;
+        q ^= q<<1; q ^= q<<2; q ^= q<<4; q &= 0xff;
+        if (q & 0x80) q ^= 0x09;
+        const x = q ^ ((q<<1|q>>7)&0xff) ^ ((q<<2|q>>6)&0xff) ^ ((q<<3|q>>5)&0xff) ^ ((q<<4|q>>4)&0xff);
+        const s = (x ^ 0x63) & 0xff;
+        sbox[p] = s;
+      } while (p !== 1);
+      sbox[0] = 0x63;
+      for (let i=0;i<256;i++) inv[sbox[i]] = i;
+    })();
+    function xtime(a){ return ((a<<1) ^ (a&0x80?0x1b:0)) & 0xff; }
+    function mul(a,b){ let r=0; while(b){ if(b&1) r^=a; a=xtime(a); b>>=1; } return r&0xff; }
+    function expandKey(keyBytes){
+      const Nk=4, Nr=10, w=new Uint8Array(16*(Nr+1));
+      w.set(keyBytes.subarray(0,16));
+      const rcon=[0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
+      for(let i=Nk;i<4*(Nr+1);i++){
+        let t=[w[(i-1)*4],w[(i-1)*4+1],w[(i-1)*4+2],w[(i-1)*4+3]];
+        if(i%Nk===0){
+          t=[t[1],t[2],t[3],t[0]];
+          t=t.map(b=>sbox[b]);
+          t[0]^=rcon[i/Nk-1];
+        }
+        for(let j=0;j<4;j++) w[i*4+j]=w[(i-Nk)*4+j]^t[j];
+      }
+      return w;
+    }
+    function decryptBlock(inp, w){
+      const Nr=10;
+      let s=new Uint8Array(16); s.set(inp);
+      addRound(s,w,Nr);
+      for(let r=Nr-1;r>=1;r--){
+        invShiftRows(s); invSub(s); addRound(s,w,r); invMixColumns(s);
+      }
+      invShiftRows(s); invSub(s); addRound(s,w,0);
+      return s;
+    }
+    function addRound(s,w,r){ for(let i=0;i<16;i++) s[i]^=w[r*16+i]; }
+    function invSub(s){ for(let i=0;i<16;i++) s[i]=inv[s[i]]; }
+    function invShiftRows(s){
+      const t=s.slice();
+      // column-major state: s[r + 4c]
+      for(let r=1;r<4;r++) for(let c=0;c<4;c++) s[r+4*c]=t[r+4*(((c-r)%4+4)%4)];
+    }
+    function invMixColumns(s){
+      for(let c=0;c<4;c++){
+        const i=4*c, a0=s[i],a1=s[i+1],a2=s[i+2],a3=s[i+3];
+        s[i]  =mul(a0,14)^mul(a1,11)^mul(a2,13)^mul(a3,9);
+        s[i+1]=mul(a0,9)^mul(a1,14)^mul(a2,11)^mul(a3,13);
+        s[i+2]=mul(a0,13)^mul(a1,9)^mul(a2,14)^mul(a3,11);
+        s[i+3]=mul(a0,11)^mul(a1,13)^mul(a2,9)^mul(a3,14);
+      }
+    }
+    return {
+      setKey(keyBytes){ roundKeys = expandKey(keyBytes); },
+      decrypt(block){ return decryptBlock(block, roundKeys); }
+    };
+  })();
+
+  // ---- Packet parsing (EPOC X: 16-bit BE samples) ----
+  function parsePacket(dec) {
+    // dec: Uint8Array length 32
+    const counter = (dec[0] << 8) | dec[1];
+    // EEG payload = bytes 2 .. len-1 (battery last byte), 16-bit BE per channel
+    const uv = new Float64Array(NCH);
+    const adc = new Int32Array(NCH);
+    for (let ch = 0; ch < NCH; ch++) {
+      const o = 2 + ch * 2;
+      let word = ((dec[o] << 8) | dec[o+1]) & 0x3FFF;
+      adc[ch] = word;
+      const norm = word / DIG_MAX;
+      uv[ch] = PHYS_MIN + norm * (PHYS_MAX - PHYS_MIN);
+    }
+    // contact quality: 2-bit fields from byte 20 (simplified, as in reference)
+    for (let i = 0; i < NCH; i++) {
+      const bi = 20 + ((i / 4) | 0);
+      if (bi < dec.length) {
+        const nib = (dec[bi] >> ((3 - (i % 4)) * 2)) & 0x03;
+        contactQ[i] = nib << 1;
+      }
+    }
+    // battery from last byte
+    const raw = dec[31];
+    const volt = 3.0 + (raw / 255) * 1.2;
+    let batt = volt <= 3.2 ? 0 : volt >= 4.2 ? 100 : Math.round((volt - 3.2) / 1.0 * 100);
+    return { counter, uv, adc, battery: batt };
+  }
+
+  // ---- Lock-on: verify key via counter continuity ----
+  function updateLock(counter) {
+    if (keyLocked) return true;
+    lockBuf.push(counter);
+    if (lockBuf.length > 5) lockBuf.shift();
+    if (lockBuf.length >= 4) {
+      let step = null, ok = true;
+      for (let i = 1; i < lockBuf.length; i++) {
+        let d = lockBuf[i] - lockBuf[i-1];
+        if (d < 0) d += 65536; // wrap
+        if (d === 0) { ok = false; break; }
+        if (step === null) step = d;
+        else if (d !== step) { ok = false; break; }
+      }
+      if (ok && step !== null) {
+        keyLocked = true;
+        log(`Kunci terkunci (counter step ${step}). Dekripsi valid.`, "ok");
+        setStatus("Streaming · terkunci", "on");
+      }
+    }
+    return keyLocked;
+  }
+
+  // ---- Frame handling ----
+  function onEncrypted(bytes) {
+    if (!bytes || bytes.length < PACKET_LEN) return;
+    const buf = bytes.length > PACKET_LEN ? bytes.subarray(0, PACKET_LEN) : bytes;
+    // decrypt 32 bytes = two AES blocks
+    const dec = new Uint8Array(PACKET_LEN);
+    dec.set(jsAes.decrypt(buf.subarray(0,16)), 0);
+    dec.set(jsAes.decrypt(buf.subarray(16,32)), 16);
+
+    const p = parsePacket(dec);
+    updateLock(p.counter);
+
+    // push to scope
+    for (let ch = 0; ch < NCH; ch++) scope[ch][scopeHead] = p.uv[ch];
+    scopeHead = (scopeHead + 1) % SCOPE_LEN;
+
+    // metrics
+    pktCount++;
+    lastCounter = p.counter;
+    lastBattery = p.battery;
+
+    if (recording && keyLocked) {
+      const ts = (performance.now() - recStartTs) / 1000;
+      const row = [ts.toFixed(4), p.counter];
+      for (let ch = 0; ch < NCH; ch++) row.push(p.uv[ch].toFixed(2));
+      row.push(p.battery);
+      for (let ch = 0; ch < NCH; ch++) row.push(contactQ[ch]);
+      rec.push(row);
+      recRaw.push(bytesToHex(buf));
+    }
+  }
+  let lastBattery = 0;
+
+  function bytesToHex(b) {
+    let s = "";
+    for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, "0");
+    return s;
+  }
+
+  // ---- WebHID connect ----
+  async function connectHID() {
+    if (!hasHID) throw new Error("WebHID tidak tersedia.");
+    const filters = [{ vendorId: 0x1234 }, { vendorId: 0x21a1 }, { vendorId: 0xed02 }];
+    let devices = await navigator.hid.requestDevice({ filters: [] }); // let user pick; filters often miss
+    if (!devices || !devices.length) throw new Error("Tidak ada perangkat dipilih.");
+    const dev = devices[0];
+    await dev.open();
+    device = dev;
+    dev.addEventListener("inputreport", (e) => {
+      const d = new Uint8Array(e.data.buffer);
+      onEncrypted(d);
+    });
+    log(`HID terbuka: ${dev.productName || "perangkat"} (${dev.vendorId.toString(16)}:${dev.productId.toString(16)})`, "ok");
+    // dongle key
+    jsAes.setKey(hexToBytes(DONGLE_KEY_HEX));
+    // optional serial override
+    const s = $("serial").value.trim();
+    if (s) { try { jsAes.setKey(deriveKeyEpocX(s)); log("Memakai kunci dari serial (override)."); } catch(err){ log("Serial diabaikan: " + err.message); } }
+    streaming = true;
+    setStatus("Streaming · menunggu lock", "on");
+  }
+
+  // ---- Web Bluetooth connect ----
+  async function connectBLE() {
+    if (!hasBLE) throw new Error("Web Bluetooth tidak tersedia.");
+    const s = $("serial").value.trim();
+    if (!s) throw new Error("Isi serial headset dulu (wajib untuk Bluetooth).");
+    jsAes.setKey(deriveKeyEpocX(s));
+
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "EPOC" }, { namePrefix: "Emotiv" }, { namePrefix: "Insight" }],
+      optionalServices: [SVC_DATA, SVC_CTRL]
+    });
+    log(`Dipilih: ${dev.name || "(tanpa nama)"}`);
+    dev.addEventListener("gattserverdisconnected", onBLEDrop);
+    const server = await dev.gatt.connect();
+    const dataSvc = await server.getPrimaryService(SVC_DATA);
+    const chars = await dataSvc.getCharacteristics();
+    let notifyChar = null;
+    for (const c of chars) if (c.properties.notify) { notifyChar = c; break; }
+    if (!notifyChar) throw new Error("Karakteristik notify data tidak ditemukan.");
+    await notifyChar.startNotifications();
+    notifyChar.addEventListener("characteristicvaluechanged", (ev) => {
+      const d = new Uint8Array(ev.target.value.buffer);
+      bleReassemble(d);
+    });
+    // start command on control service (best-effort)
+    try {
+      const ctrlSvc = await server.getPrimaryService(SVC_CTRL);
+      const cchars = await ctrlSvc.getCharacteristics();
+      for (const c of cchars) {
+        if (c.properties.write || c.properties.writeWithoutResponse) {
+          try { await c.writeValue(new Uint8Array([0x01])); } catch(_){}
+        }
+      }
+      log("Perintah start dikirim ke control service.");
+    } catch(e) { log("Control service tidak tersedia (lanjut tanpa start cmd).", "err"); }
+
+    device = { gatt: server, dev };
+    streaming = true;
+    setStatus("Streaming · menunggu lock", "on");
+  }
+
+  // BLE notifications arrive as 20+12; reassemble to 32.
+  let bleBuf = [];
+  function bleReassemble(chunk) {
+    for (let i = 0; i < chunk.length; i++) bleBuf.push(chunk[i]);
+    while (bleBuf.length >= PACKET_LEN) {
+      const pkt = Uint8Array.from(bleBuf.splice(0, PACKET_LEN));
+      onEncrypted(pkt);
+    }
+    if (bleBuf.length > PACKET_LEN * 4) bleBuf.splice(0, bleBuf.length - PACKET_LEN * 2);
+  }
+  function onBLEDrop() {
+    log("BLE terputus.", "err");
+    teardown();
+  }
+
+  // ---- Connect / disconnect ----
+  async function doConnect() {
+    $("connectBtn").disabled = true;
+    keyLocked = false; lockBuf = []; bleBuf = [];
+    try {
+      if (mode === "hid") await connectHID();
+      else await connectBLE();
+      $("disconnectBtn").disabled = false;
+      $("recBtn").disabled = false;
+      $("clearBtn").disabled = false;
+    } catch (err) {
+      log("Gagal terhubung: " + err.message, "err");
+      setStatus("Belum terhubung", "");
+      $("connectBtn").disabled = false;
+    }
+  }
+
+  function teardown() {
+    streaming = false;
+    try {
+      if (mode === "hid" && device && device.close) device.close();
+      if (mode === "ble" && device && device.gatt && device.gatt.connected) device.gatt.disconnect();
+    } catch(_){}
+    device = null;
+    if (recording) stopRec();
+    $("connectBtn").disabled = false;
+    $("disconnectBtn").disabled = true;
+    $("recBtn").disabled = true;
+    $("clearBtn").disabled = true;
+    setStatus("Belum terhubung", "");
+  }
+
+  $("connectBtn").addEventListener("click", doConnect);
+  $("disconnectBtn").addEventListener("click", () => { log("Diputus oleh pengguna."); teardown(); });
+
+  // ---- Recording ----
+  function startRec() {
+    if (!keyLocked) { log("Belum terkunci — tunggu dekripsi valid sebelum merekam.", "err"); return; }
+    rec = []; recRaw = []; recStartTs = performance.now(); recording = true;
+    recChip.className = "status-chip rec"; recText.textContent = "Merekam";
+    $("recBtn").textContent = "■ Stop rekam";
+    $("recBtn").classList.remove("rec");
+    log("Mulai merekam.", "ok");
+  }
+  function stopRec() {
+    recording = false;
+    recChip.className = "status-chip"; recText.textContent = "Siaga";
+    $("recBtn").textContent = "● Mulai rekam";
+    $("recBtn").classList.add("rec");
+    const n = rec.length;
+    $("saveBtn").disabled = n === 0;
+    $("saveRawBtn").disabled = n === 0;
+    $("copyBtn").disabled = true;
+    log(`Berhenti merekam. ${n} sampel tersimpan di buffer.`, "ok");
+  }
+  $("recBtn").addEventListener("click", () => { recording ? stopRec() : startRec(); });
+  $("clearBtn").addEventListener("click", () => {
+    rec = []; recRaw = []; currentText = "";
+    $("saveBtn").disabled = true; $("saveRawBtn").disabled = true; $("copyBtn").disabled = true;
+    outArea.hidden = true; outArea.value = "";
+    log("Buffer dikosongkan.");
+  });
+
+  // ---- Export ----
+  // Try a real download (works when the HTML is opened directly, not in the artifact frame).
+  // Always also show the text so copy/selection works everywhere.
+  let currentText = "";
+  const outArea = $("outArea");
+  function tryDownload(filename, text) {
+    try {
+      const blob = new Blob([text], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    } catch (_) { /* ignore — copy path still available */ }
+  }
+  function present(text, filename, label) {
+    currentText = text;
+    outArea.hidden = false;
+    outArea.value = text.length > 400000 ? text.slice(0, 400000) + "\n… (dipotong untuk tampilan; salin/unduh tetap lengkap)" : text;
+    $("copyBtn").disabled = false;
+    tryDownload(filename, text);
+    $("dlHint").innerHTML = `Siap: <strong>${label}</strong> (${rec.length} baris). Jika unduhan otomatis tidak muncul, salin teks di bawah dan simpan sebagai berkas.`;
+  }
+  $("saveBtn").addEventListener("click", () => {
+    if (!rec.length) return;
+    const header = ["t_s","counter", ...CHANNELS.map(c=>c+"_uV"), "battery", ...CHANNELS.map(c=>c+"_CQ")].join(",");
+    const body = rec.map(r => r.join(",")).join("\n");
+    const name = `epocx_${new Date().toISOString().replace(/[:.]/g,"-").slice(0,19)}.csv`;
+    present(header + "\n" + body + "\n", name, name);
+  });
+  $("saveRawBtn").addEventListener("click", () => {
+    if (!recRaw.length) return;
+    const name = `epocx_raw_${new Date().toISOString().replace(/[:.]/g,"-").slice(0,19)}.txt`;
+    present(recRaw.join("\n") + "\n", name, name);
+  });
+  $("copyBtn").addEventListener("click", async () => {
+    if (!currentText) return;
+    try {
+      await navigator.clipboard.writeText(currentText);
+      $("dlHint").innerHTML = "Tersalin ke clipboard. Tempel ke editor teks dan simpan sebagai berkas.";
+    } catch (_) {
+      outArea.hidden = false; outArea.focus(); outArea.select();
+      $("dlHint").innerHTML = "Clipboard ditolak browser — teks sudah diseleksi, tekan Ctrl/Cmd+C untuk menyalin.";
+    }
+  });
+
+  // ---- Scope rendering ----
+  const canvas = $("scope");
+  const ctx = canvas.getContext("2d");
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  function sizeCanvas() {
+    const w = canvas.clientWidth;
+    const h = 420;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", sizeCanvas);
+
+  function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  function draw() {
+    const w = canvas.clientWidth, h = 420;
+    ctx.clearRect(0, 0, w, h);
+    const trace = cssVar("--trace") || "#1f6f6b";
+    const line = cssVar("--line") || "#d4d8de";
+    const soft = cssVar("--ink-soft") || "#5b6472";
+    const laneH = h / NCH;
+
+    ctx.font = "10px ui-monospace, monospace";
+    for (let ch = 0; ch < NCH; ch++) {
+      const yMid = laneH * ch + laneH / 2;
+      // baseline
+      ctx.strokeStyle = line; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(40, yMid); ctx.lineTo(w, yMid); ctx.stroke();
+      // label
+      ctx.fillStyle = soft; ctx.textBaseline = "middle";
+      ctx.fillText(CHANNELS[ch], 4, yMid);
+
+      // auto-gain over window
+      const data = scope[ch];
+      let mn = Infinity, mx = -Infinity;
+      for (let i = 0; i < SCOPE_LEN; i++) { const v = data[i]; if (v<mn) mn=v; if (v>mx) mx=v; }
+      let span = mx - mn; if (!isFinite(span) || span < 1) span = 1;
+      const amp = (laneH * 0.42);
+
+      ctx.strokeStyle = trace; ctx.lineWidth = 1;
+      ctx.beginPath();
+      const plotW = w - 44;
+      for (let i = 0; i < SCOPE_LEN; i++) {
+        const idx = (scopeHead + i) % SCOPE_LEN;
+        const v = data[idx];
+        const norm = (v - mn) / span - 0.5;      // -0.5..0.5
+        const x = 42 + (i / (SCOPE_LEN - 1)) * plotW;
+        const y = yMid - norm * 2 * amp;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    requestAnimationFrame(draw);
+  }
+
+  // ---- Legend ----
+  function buildLegend() {
+    const el = $("legend");
+    el.innerHTML = "";
+    for (let i = 0; i < NCH; i++) {
+      const tag = document.createElement("span");
+      tag.className = "chan-tag";
+      const pip = document.createElement("span");
+      pip.className = "q-pip"; pip.id = "pip-" + i;
+      tag.appendChild(pip);
+      tag.appendChild(document.createTextNode(CHANNELS[i]));
+      el.appendChild(tag);
+    }
+  }
+
+  // ---- Metrics update loop ----
+  function tickMetrics() {
+    const now = performance.now();
+    if (now - lastRateT >= 1000) {
+      ratePerSec = Math.round(pktCount * 1000 / (now - lastRateT));
+      pktCount = 0; lastRateT = now;
+    }
+    $("mRate").innerHTML = streaming ? `${ratePerSec}<small> /s</small>` : "—";
+    $("mCounter").textContent = lastCounter != null ? lastCounter : "—";
+    $("mBatt").innerHTML = streaming ? `${lastBattery}<small> %</small>` : "—";
+    let avgQ = 0; for (let i=0;i<NCH;i++) avgQ += contactQ[i]; avgQ = Math.round(avgQ/NCH);
+    $("mSig").innerHTML = streaming && keyLocked ? `${avgQ}<small> /4</small>` : "—";
+
+    // pips
+    for (let i = 0; i < NCH; i++) {
+      const pip = $("pip-" + i);
+      if (pip) pip.className = "q-pip q" + Math.max(0, Math.min(4, contactQ[i]));
+    }
+
+    if (recording) {
+      $("mSamples").textContent = rec.length;
+      const dur = (now - recStartTs) / 1000;
+      $("mDur").innerHTML = dur.toFixed(1) + '<small> s</small>';
+      const kb = Math.round(rec.length * 160 / 1024);
+      $("mSize").innerHTML = (kb > 1024 ? (kb/1024).toFixed(1)+'<small> MB</small>' : kb + '<small> KB</small>');
+    }
+    requestAnimationFrame(tickMetrics);
+  }
+
+  // ---- Init ----
+  buildLegend();
+  sizeCanvas();
+  requestAnimationFrame(draw);
+  requestAnimationFrame(tickMetrics);
+  selectMode("hid");
+  log("Siap. Pilih mode koneksi dan hubungkan perangkat.");
+  if (!hasSubtle) log("Peringatan: Web Crypto tidak ada.", "err");
+})();
+</script>
+
+</body></html>
