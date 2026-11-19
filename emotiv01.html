@@ -1,0 +1,756 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>EPOC X Raw Capture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: lab-instrument console — sticky header, stacked panels,
+     a 14-lane strip chart as the centrepiece, mono readouts and a hex diagnostics pane. */
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --panel-2: #eceef1;
+    --ink: #1a1d23;
+    --ink-soft: #5b6472;
+    --line: #d4d8de;
+    --accent: #1f6f6b;
+    --accent-soft: #e2efee;
+    --live: #c2410c;
+    --good: #2f8f46;
+    --warn: #b8860b;
+    --bad: #c0392b;
+    --trace: #1f6f6b;
+    --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --panel: #1c2026; --panel-2: #22272e; --ink: #e7eaef; --ink-soft: #99a2b0;
+      --line: #313843; --accent: #4bb5ae; --accent-soft: #19302e; --live: #f0763f;
+      --good: #58c278; --warn: #d6a93a; --bad: #e86a5c; --trace: #4bb5ae; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --panel: #1c2026; --panel-2: #22272e; --ink: #e7eaef; --ink-soft: #99a2b0;
+    --line: #313843; --accent: #4bb5ae; --accent-soft: #19302e; --live: #f0763f;
+    --good: #58c278; --warn: #d6a93a; --bad: #e86a5c; --trace: #4bb5ae; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; margin: 0; }
+  .wrap {
+    max-width: 1000px; margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0 48px;
+  }
+  header { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--panel); border-bottom: 1px solid var(--line); }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 21; background: var(--panel); }
+  .head-inner {
+    max-width: 1000px; margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
+  .brand h1 { font-size: 1.05rem; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+  .brand .sub { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); }
+  .status-chip {
+    margin-left: auto; font-family: var(--mono); font-size: 0.72rem; display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-soft);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-soft); flex: none; }
+  .status-chip.on .dot { background: var(--good); }
+  .status-chip.busy .dot { background: var(--warn); }
+  .status-chip.err .dot { background: var(--bad); }
+  .status-chip.rec .dot { background: var(--live); animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) { .status-chip.rec .dot { animation: none; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-top: 18px; }
+  .panel > h2 { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-soft); margin: 0 0 14px; font-weight: 650; }
+
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button {
+    font-family: var(--sans); font-size: 0.85rem; font-weight: 550; padding: 9px 16px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.rec { background: var(--live); border-color: var(--live); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .field label { font-size: 0.8rem; color: var(--ink-soft); }
+  input[type="text"] {
+    font-family: var(--mono); font-size: 0.82rem; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); width: 20ch; max-width: 100%; text-transform: uppercase;
+  }
+  input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .metric { background: var(--panel); padding: 12px 14px; min-width: 0; }
+  .metric .k { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); }
+  .metric .v { font-family: var(--mono); font-size: 1.15rem; font-weight: 500; margin-top: 3px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .metric .v small { font-size: 0.7rem; color: var(--ink-soft); font-weight: 400; }
+  .v.good { color: var(--good); } .v.warn { color: var(--warn); } .v.bad { color: var(--bad); }
+  @media (max-width: 560px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+
+  canvas { display: block; width: 100%; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+
+  .progress { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; margin-top: 12px; border: 1px solid var(--line); }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+
+  .log, .hex {
+    font-family: var(--mono); font-size: 0.72rem; color: var(--ink-soft); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow: auto;
+  }
+  .log { max-height: 160px; white-space: pre-wrap; word-break: break-word; }
+  .hex { white-space: pre; max-height: 220px; }
+  .log .err { color: var(--bad); } .log .ok { color: var(--good); } .log .warn { color: var(--warn); }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 0.8rem; margin-bottom: 12px; }
+  .kv dt { color: var(--ink-soft); }
+  .kv dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; min-width: 0; }
+
+  details.note { margin-top: 18px; }
+  details.note summary { cursor: pointer; font-size: 0.8rem; font-weight: 550; color: var(--accent); padding: 4px 0; }
+  details.note summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .note-body { font-size: 0.84rem; color: var(--ink-soft); line-height: 1.6; max-width: 72ch; }
+  .note-body p { margin: 10px 0; }
+  .note-body code { font-family: var(--mono); font-size: 0.82em; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+  .note-body strong { color: var(--ink); font-weight: 600; }
+  .hint { font-size: 0.78rem; color: var(--ink-soft); margin: 10px 0 0; }
+  .hint code { font-family: var(--mono); font-size: 0.9em; background: var(--panel-2); padding: 0 4px; border-radius: 3px; color: var(--ink); }
+  .unsupported { color: var(--bad); font-weight: 500; }
+  textarea {
+    width: 100%; margin-top: 12px; min-height: 120px; font-family: var(--mono); font-size: 0.72rem; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--bg); color: var(--ink); padding: 10px; resize: vertical;
+  }
+</style>
+
+<header>
+  <div class="head-inner">
+    <div class="brand">
+      <h1>EPOC&nbsp;X Raw Capture</h1>
+      <span class="sub">USB dongle · 14-ch · AES-128-ECB</span>
+    </div>
+    <div class="status-chip" id="statusChip"><span class="dot"></span><span id="statusText">Belum terhubung</span></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="panel">
+    <h2>1 · Koneksi dongle</h2>
+    <div class="field" style="margin-bottom:6px">
+      <label for="serial">Serial dongle (opsional)</label>
+      <input type="text" id="serial" placeholder="mis. UD20221202006756" maxlength="24" autocomplete="off" spellcheck="false">
+    </div>
+    <p class="hint" style="margin-top:0;margin-bottom:14px">Cukup 4 karakter terakhir. Jika dikosongkan, kunci dicari otomatis dari data (beberapa detik untuk serial berakhiran angka, hingga ~1 menit untuk huruf+angka).</p>
+    <div class="controls">
+      <button class="primary" id="connectBtn">Hubungkan dongle</button>
+      <button id="disconnectBtn" disabled>Putuskan</button>
+      <button id="rescanBtn" disabled>Cari ulang kunci</button>
+    </div>
+    <div class="progress" id="progWrap" hidden><div id="progBar"></div></div>
+    <p class="hint" id="supportHint"></p>
+  </section>
+
+  <section class="panel">
+    <h2>2 · Monitor langsung</h2>
+    <div class="metrics">
+      <div class="metric"><div class="k">Paket EEG/detik</div><div class="v" id="mRate">—</div></div>
+      <div class="metric"><div class="k">Counter</div><div class="v" id="mCounter">—</div></div>
+      <div class="metric"><div class="k">Kontinuitas counter</div><div class="v" id="mCont">—</div></div>
+      <div class="metric"><div class="k">Kunci AES</div><div class="v" id="mKey">—</div></div>
+    </div>
+    <div style="margin-top:16px">
+      <canvas id="scope" height="420" aria-label="Strip chart 14 kanal EEG"></canvas>
+    </div>
+    <p class="hint">Tiap lajur diskalakan otomatis dan offset DC dibuang untuk tampilan. Kontinuitas counter mendekati 100% berarti kunci dan urutan paket benar; angka rendah berarti data masih acak.</p>
+  </section>
+
+  <section class="panel">
+    <h2>3 · Rekam</h2>
+    <div class="controls">
+      <button class="rec" id="recBtn" disabled>● Mulai rekam</button>
+      <button id="clearBtn" disabled>Kosongkan buffer</button>
+      <span class="status-chip" id="recChip" style="margin-left:0"><span class="dot"></span><span id="recText">Siaga</span></span>
+    </div>
+    <div class="metrics" style="margin-top:14px; grid-template-columns: repeat(3,1fr)">
+      <div class="metric"><div class="k">Sampel terekam</div><div class="v" id="mSamples">0</div></div>
+      <div class="metric"><div class="k">Durasi</div><div class="v" id="mDur">0.0<small> s</small></div></div>
+      <div class="metric"><div class="k">Perkiraan ukuran</div><div class="v" id="mSize">0<small> KB</small></div></div>
+    </div>
+    <div class="controls" style="margin-top:14px">
+      <button id="saveBtn" disabled>Siapkan CSV</button>
+      <button id="saveRawBtn" disabled>Siapkan paket terenkripsi (hex)</button>
+      <button id="copyBtn" disabled>Salin ke clipboard</button>
+    </div>
+    <p class="hint" id="dlHint">CSV berisi: <code>t_s, counter, AF3 … AF4</code> dalam µV. Di jendela artifact unduhan otomatis diblokir, jadi pakai “Salin ke clipboard” lalu simpan sebagai <code>.csv</code>. Bila file HTML ini dibuka langsung di Chrome/Edge, berkas terunduh otomatis.</p>
+    <textarea id="outArea" readonly hidden aria-label="Isi ekspor"></textarea>
+  </section>
+
+  <section class="panel">
+    <h2>4 · Diagnostik</h2>
+    <dl class="kv">
+      <dt>Antarmuka HID</dt><dd id="dIface">—</dd>
+      <dt>Panjang report</dt><dd id="dLen">—</dd>
+      <dt>Kunci (hex)</dt><dd id="dKey">—</dd>
+      <dt>Tipe paket (byte 1)</dt><dd id="dTypes">—</dd>
+    </dl>
+    <div class="hex" id="dHex" aria-label="Paket terdekripsi terakhir">Belum ada paket.</div>
+    <p class="hint">Delapan paket terakhir setelah dekripsi. Byte 0 harus naik berurutan dan byte 1 harus didominasi satu nilai. Jika tidak, kunci masih salah.</p>
+    <div class="log" id="log" aria-live="polite" style="margin-top:14px"></div>
+  </section>
+
+  <details class="note">
+    <summary>Catatan teknis &amp; cara menemukan serial dongle</summary>
+    <div class="note-body">
+      <p><strong>Kunci AES.</strong> Untuk EPOC X/EPOC+ via dongle, kunci dibentuk dari 4 karakter terakhir serial USB dongle (s1 = karakter terakhir): <code>s1 s2 s4 s4 s2 s1 s2 s4 s1 s4 s3 s2 s1 s2 s2 s3</code>. Contoh: serial <code>UD20221202006756</code> → kunci <code>6566565666756557</code>. WebHID tidak bisa membaca serial perangkat, jadi app ini mencoba seluruh kemungkinan 4 karakter dan memilih kunci yang membuat counter paket (byte 0) naik teratur.</p>
+      <p><strong>Menemukan serial (bila ingin diisi manual).</strong> Windows: Device Manager → <em>Universal Serial Bus controllers</em> atau <em>Human Interface Devices</em> → perangkat dengan <code>VID_1234&amp;PID_ED02</code> → Properties → Details → <em>Device instance path</em>. Bagian setelah <code>PID_ED02\</code> (pada entri tanpa <code>MI_</code>) adalah serialnya. Linux: <code>lsusb -v -d 1234:ed02 | grep iSerial</code>. macOS: System Information → USB → <em>EEG Signals</em> → Serial Number.</p>
+      <p><strong>Format paket.</strong> 32 byte per paket. Byte 0 = counter, byte 1 = tipe paket. EEG 14 kanal ada di byte 2–15 dan 18–31, tiap sampel 2 byte little-endian, dikonversi seperti CyKit: <code>µV = 4201.0256 + 0.128205 × (raw − 32768)</code>. Offset ±4200 µV mengikuti konvensi ekspor Emotiv, jadi buang rata-ratanya (high-pass) sebelum analisis. Paket dengan tipe berbeda dari tipe dominan (kemungkinan data gerak/motion) dilewati.</p>
+      <p><strong>Yang belum didekode.</strong> Baterai, kualitas kontak, dan sensor gerak belum didekode (sebelumnya baterai salah dibaca dari byte EEG, itulah sebabnya angkanya berubah-ubah). Laju sampel default EPOC X via dongle 128 Hz, bisa 256 Hz bila diubah dari Emotiv Launcher.</p>
+      <p><strong>Windows.</strong> Jangan ganti driver dongle ke WinUSB/Zadig. WebHID memakai driver HID bawaan. Tutup EmotivPRO/Launcher agar dongle tidak dipakai aplikasi lain.</p>
+      <p><strong>Validasi.</strong> Skala µV mengikuti rekayasa balik komunitas (CyKit), bukan dokumentasi resmi. Untuk publikasi, bandingkan dulu dengan rekaman EmotivPRO.</p>
+      <p>Urutan kanal: AF3, F7, F3, FC5, T7, P7, O1, O2, P8, T8, FC6, F4, F8, AF4.</p>
+    </div>
+  </details>
+</div>
+
+<script id="epoc-core">
+// Pure logic (no DOM): AES-128 decrypt, key schedules, packet decode, key scoring/search.
+window.EpocCore = (() => {
+  "use strict";
+  // ---------- AES-128 decrypt (ECB, table-assisted, allocation-free) ----------
+  const SBOX = new Uint8Array(256), INV = new Uint8Array(256);
+  (function () {
+    let p = 1, q = 1;
+    do {
+      p = (p ^ (p << 1) ^ (p & 0x80 ? 0x11b : 0)) & 0xff;
+      q ^= q << 1; q ^= q << 2; q ^= q << 4; q &= 0xff;
+      if (q & 0x80) q ^= 0x09;
+      const x = q ^ ((q << 1 | q >> 7) & 0xff) ^ ((q << 2 | q >> 6) & 0xff) ^ ((q << 3 | q >> 5) & 0xff) ^ ((q << 4 | q >> 4) & 0xff);
+      SBOX[p] = (x ^ 0x63) & 0xff;
+    } while (p !== 1);
+    SBOX[0] = 0x63;
+    for (let i = 0; i < 256; i++) INV[SBOX[i]] = i;
+  })();
+  const xt = a => ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff;
+  const mul = (a, b) => { let r = 0; while (b) { if (b & 1) r ^= a; a = xt(a); b >>= 1; } return r & 0xff; };
+  const M9 = new Uint8Array(256), M11 = new Uint8Array(256), M13 = new Uint8Array(256), M14 = new Uint8Array(256);
+  for (let a = 0; a < 256; a++) { M9[a] = mul(a, 9); M11[a] = mul(a, 11); M13[a] = mul(a, 13); M14[a] = mul(a, 14); }
+  const SHIFT = new Uint8Array(16); // inverse ShiftRows: dst[i] = src[SHIFT[i]]
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) SHIFT[r + 4 * c] = r + 4 * ((c - r + 4) % 4);
+  const RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
+
+  const W = new Uint8Array(176);
+  function setKey(k) {
+    for (let i = 0; i < 16; i++) W[i] = k[i];
+    for (let i = 4; i < 44; i++) {
+      let t0 = W[(i - 1) * 4], t1 = W[(i - 1) * 4 + 1], t2 = W[(i - 1) * 4 + 2], t3 = W[(i - 1) * 4 + 3];
+      if (i % 4 === 0) {
+        const tmp = t0;
+        t0 = SBOX[t1] ^ RCON[i / 4 - 1]; t1 = SBOX[t2]; t2 = SBOX[t3]; t3 = SBOX[tmp];
+      }
+      W[i * 4] = W[(i - 4) * 4] ^ t0; W[i * 4 + 1] = W[(i - 4) * 4 + 1] ^ t1;
+      W[i * 4 + 2] = W[(i - 4) * 4 + 2] ^ t2; W[i * 4 + 3] = W[(i - 4) * 4 + 3] ^ t3;
+    }
+  }
+  const S = new Uint8Array(16), T = new Uint8Array(16);
+  function decryptBlock(src, so, dst, d0) {
+    for (let i = 0; i < 16; i++) S[i] = src[so + i] ^ W[160 + i];
+    for (let r = 9; r >= 1; r--) {
+      const o = r * 16;
+      for (let i = 0; i < 16; i++) T[i] = INV[S[SHIFT[i]]] ^ W[o + i];
+      for (let c = 0; c < 16; c += 4) {
+        const a0 = T[c], a1 = T[c + 1], a2 = T[c + 2], a3 = T[c + 3];
+        S[c] = M14[a0] ^ M11[a1] ^ M13[a2] ^ M9[a3];
+        S[c + 1] = M9[a0] ^ M14[a1] ^ M11[a2] ^ M13[a3];
+        S[c + 2] = M13[a0] ^ M9[a1] ^ M14[a2] ^ M11[a3];
+        S[c + 3] = M11[a0] ^ M13[a1] ^ M9[a2] ^ M14[a3];
+      }
+    }
+    for (let i = 0; i < 16; i++) dst[d0 + i] = INV[S[SHIFT[i]]] ^ W[i];
+  }
+  function decryptPacket(pkt, out) { decryptBlock(pkt, 0, out, 0); decryptBlock(pkt, 16, out, 16); return out; }
+
+  // ---------- Key schedules (from the last 4 serial characters) ----------
+  // suffix = 4-char string, e.g. "6756" -> s4='6', s3='7', s2='5', s1='6'
+  function keyEpocX(suf) {
+    const s1 = suf.charCodeAt(3), s2 = suf.charCodeAt(2), s3 = suf.charCodeAt(1), s4 = suf.charCodeAt(0);
+    return Uint8Array.of(s1, s2, s4, s4, s2, s1, s2, s4, s1, s4, s3, s2, s1, s2, s2, s3);
+  }
+  function keyEpocLegacy(suf) {
+    const s1 = suf.charCodeAt(3), s2 = suf.charCodeAt(2), s3 = suf.charCodeAt(1), s4 = suf.charCodeAt(0);
+    return Uint8Array.of(s1, 0, s2, 0x54, s3, 0x10, s4, 0x42, s1, 0, s2, 0x48, s3, 0, s4, 0x50);
+  }
+  const SCHEDULES = [
+    { id: "epocx", name: "EPOC X / EPOC+", make: keyEpocX },
+    { id: "legacy", name: "EPOC (legacy)", make: keyEpocLegacy }
+  ];
+  function suffixFromSerial(serial) {
+    const s = String(serial || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    return s.length >= 4 ? s.slice(-4) : null;
+  }
+
+  // ---------- Key scoring via counter (byte 0) continuity ----------
+  const blk = new Uint8Array(16);
+  function counters(pkts, n) {
+    const c = new Uint8Array(n);
+    for (let i = 0; i < n; i++) { decryptBlock(pkts[i], 0, blk, 0); c[i] = blk[0]; }
+    return c;
+  }
+  function modeDiff(c) {
+    const hist = new Uint16Array(256);
+    for (let i = 1; i < c.length; i++) hist[(c[i] - c[i - 1] + 256) & 0xff]++;
+    let best = 0, step = 0;
+    for (let d = 1; d < 256; d++) if (hist[d] > best) { best = hist[d]; step = d; }
+    return { count: best, step, frac: best / Math.max(1, c.length - 1) };
+  }
+  // Fast reject on 6 packets, then full score. Returns null or {frac, step}.
+  function testKey(key, pkts) {
+    setKey(key);
+    const q = modeDiff(counters(pkts, 6));
+    if (q.count < 3) return null;
+    const f = modeDiff(counters(pkts, pkts.length));
+    return f.frac >= 0.4 ? { frac: f.frac, step: f.step } : null;
+  }
+
+  // Candidate suffix generator: 4 digits first, then all 0-9A-Z combos that contain a letter.
+  const DIG = "0123456789", ALN = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  function* suffixes() {
+    for (let i = 0; i < 10000; i++) yield String(i).padStart(4, "0");
+    const n = ALN.length;
+    for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) for (let c = 0; c < n; c++) for (let d = 0; d < n; d++) {
+      if (a < 10 && b < 10 && c < 10 && d < 10) continue;
+      yield ALN[a] + ALN[b] + ALN[c] + ALN[d];
+    }
+  }
+  const TOTAL_SUFFIXES = Math.pow(36, 4);
+
+  // Chunked async search. onProgress(fraction). Returns {suffix, schedule, key, frac, step} or null.
+  function searchKey(pkts, opts) {
+    opts = opts || {};
+    const prefer = opts.preferSuffix || null;
+    const onProgress = opts.onProgress || (() => {});
+    const chunk = opts.chunk || 4000;
+    const isCancelled = opts.isCancelled || (() => false);
+    return new Promise((resolve) => {
+      // 1) preferred suffix (from user input), both schedules
+      if (prefer) {
+        for (const sch of SCHEDULES) {
+          const k = sch.make(prefer); const r = testKey(k, pkts);
+          if (r) return resolve({ suffix: prefer, schedule: sch, key: k, ...r });
+        }
+      }
+      const gen = suffixes();
+      let done = 0;
+      function step() {
+        if (isCancelled()) return resolve(null);
+        for (let i = 0; i < chunk; i++) {
+          const nx = gen.next();
+          if (nx.done) { onProgress(1); return resolve(null); }
+          const suf = nx.value; done++;
+          for (const sch of SCHEDULES) {
+            const k = sch.make(suf); const r = testKey(k, pkts);
+            if (r) { onProgress(1); return resolve({ suffix: suf, schedule: sch, key: k, ...r }); }
+          }
+        }
+        onProgress(done / TOTAL_SUFFIXES);
+        setTimeout(step, 0);
+      }
+      step();
+    });
+  }
+
+  // ---------- EEG decode (EPOC+/X dongle layout, CyKit-compatible scaling) ----------
+  const EEG_OFFSETS = [2, 4, 6, 8, 10, 12, 14, 18, 20, 22, 24, 26, 28, 30];
+  function decodeEEG(dec, outUv) {
+    for (let ch = 0; ch < 14; ch++) {
+      const o = EEG_OFFSETS[ch];
+      outUv[ch] = dec[o] * 0.128205128205129 + 4201.02564096001 + (dec[o + 1] - 128) * 32.82051289;
+    }
+    return outUv;
+  }
+
+  function hex(b, sep) {
+    let s = "";
+    for (let i = 0; i < b.length; i++) s += (i && sep ? sep : "") + b[i].toString(16).padStart(2, "0");
+    return s;
+  }
+
+  return { setKey, decryptBlock, decryptPacket, keyEpocX, keyEpocLegacy, SCHEDULES, suffixFromSerial, testKey, searchKey, decodeEEG, hex, modeDiff };
+})();
+</script>
+
+<script>
+(() => {
+  "use strict";
+  const C = window.EpocCore;
+  const CHANNELS = ["AF3","F7","F3","FC5","T7","P7","O1","O2","P8","T8","FC6","F4","F8","AF4"];
+  const NCH = 14, PACKET_LEN = 32, CAL_N = 64;
+  const EMOTIV_VID = 0x1234, EMOTIV_PID = 0xED02;
+
+  // ---- state ----
+  let hidDevs = [], activeDev = null;
+  let phase = "idle";          // idle | calibrating | searching | locked | failed
+  let cal = [];                // calibration packets (encrypted)
+  let keyInfo = null;          // {suffix, schedule, key, frac, step}
+  let cancelSearch = false;
+  let recording = false, recStart = 0;
+  let rec = [], recRaw = [];
+  const dec = new Uint8Array(PACKET_LEN);
+  const uv = new Float64Array(NCH);
+  const typeHist = new Map();
+  let dominantType = null;
+  const lastHex = [];
+  const recentCounters = [];
+  let lastCounter = null, eegCount = 0, rateT = performance.now(), rate = 0;
+  let reportLenSeen = null;
+
+  // scope ring buffer
+  const SCOPE_LEN = 640;
+  const scope = Array.from({ length: NCH }, () => new Float32Array(SCOPE_LEN));
+  let head = 0, filled = 0;
+
+  // ---- DOM ----
+  const $ = id => document.getElementById(id);
+  function log(msg, cls) {
+    const el = $("log"), line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    el.appendChild(line); el.scrollTop = el.scrollHeight;
+    while (el.childElementCount > 300) el.removeChild(el.firstChild);
+  }
+  function setStatus(text, cls) { $("statusText").textContent = text; $("statusChip").className = "status-chip" + (cls ? " " + cls : ""); }
+  function setProgress(f) {
+    $("progWrap").hidden = f == null;
+    if (f != null) $("progBar").style.width = (Math.min(1, f) * 100).toFixed(1) + "%";
+  }
+
+  const hasHID = "hid" in navigator;
+  $("supportHint").innerHTML = hasHID
+    ? "Pakai Chrome atau Edge di desktop. Tutup EmotivPRO/Launcher dulu, colokkan dongle, nyalakan headset, lalu klik Hubungkan."
+    : '<span class="unsupported">WebHID tidak tersedia di browser ini. Pakai Chrome atau Edge versi desktop.</span>';
+  if (!hasHID) $("connectBtn").disabled = true;
+
+  // ---- connect ----
+  async function connect() {
+    $("connectBtn").disabled = true;
+    try {
+      let devs = await navigator.hid.requestDevice({ filters: [{ vendorId: EMOTIV_VID }] });
+      if (!devs.length) { log("Tidak ada perangkat dipilih."); $("connectBtn").disabled = false; return; }
+      hidDevs = [];
+      for (const d of devs) {
+        try {
+          if (!d.opened) await d.open();
+          d.addEventListener("inputreport", onReport);
+          hidDevs.push(d);
+          const cols = (d.collections || []).map(c => `usagePage 0x${(c.usagePage||0).toString(16)}/usage ${c.usage}`).join(", ");
+          log(`Dibuka: ${d.productName || "HID"} ${d.vendorId.toString(16)}:${d.productId.toString(16)} [${cols || "tanpa koleksi"}]`, "ok");
+        } catch (e) { log(`Gagal membuka satu antarmuka: ${e.message}`, "warn"); }
+      }
+      if (!hidDevs.length) throw new Error("Tidak ada antarmuka HID yang bisa dibuka.");
+      if (devs.some(d => d.productId !== EMOTIV_PID)) log(`Catatan: product ID bukan 0xED02. Tetap dicoba.`, "warn");
+      resetStream();
+      phase = "calibrating";
+      setStatus("Mengumpulkan paket…", "busy");
+      $("disconnectBtn").disabled = false;
+      $("rescanBtn").disabled = false;
+      log("Menunggu paket untuk kalibrasi kunci. Pastikan headset menyala dan terhubung ke dongle.");
+      setTimeout(() => { if (phase === "calibrating" && cal.length === 0) log("Belum ada paket masuk setelah 5 detik. Cek headset menyala dan lampu dongle, atau tutup aplikasi Emotiv lain yang memakai dongle.", "err"); }, 5000);
+    } catch (e) {
+      log("Gagal terhubung: " + e.message, "err");
+      setStatus("Belum terhubung", "err");
+      $("connectBtn").disabled = false;
+    }
+  }
+
+  function resetStream() {
+    cal = []; keyInfo = null; activeDev = null; reportLenSeen = null;
+    typeHist.clear(); dominantType = null; lastHex.length = 0; recentCounters.length = 0;
+    lastCounter = null; head = 0; filled = 0;
+    for (const s of scope) s.fill(0);
+    $("mKey").textContent = "—"; $("mKey").className = "v";
+    $("dKey").textContent = "—"; $("dTypes").textContent = "—"; $("dHex").textContent = "Belum ada paket.";
+  }
+
+  async function disconnect() {
+    cancelSearch = true;
+    if (recording) stopRec();
+    for (const d of hidDevs) { try { d.removeEventListener("inputreport", onReport); await d.close(); } catch (_) {} }
+    hidDevs = []; activeDev = null; phase = "idle";
+    setProgress(null);
+    setStatus("Belum terhubung", "");
+    $("connectBtn").disabled = !hasHID; $("disconnectBtn").disabled = true; $("rescanBtn").disabled = true;
+    $("recBtn").disabled = true; $("clearBtn").disabled = true;
+    log("Dongle diputus.");
+  }
+
+  // ---- reports ----
+  function onReport(e) {
+    const dv = e.data;
+    let bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    if (bytes.length === PACKET_LEN + 1) bytes = bytes.subarray(1);
+    if (bytes.length < PACKET_LEN) return;
+    if (bytes.length > PACKET_LEN) bytes = bytes.subarray(bytes.length - PACKET_LEN);
+    // lock onto the first interface that delivers 32-byte reports
+    if (!activeDev) {
+      activeDev = e.device;
+      reportLenSeen = `${dv.byteLength} byte, reportId ${e.reportId}`;
+      $("dLen").textContent = reportLenSeen;
+      const c = (e.device.collections || [])[0];
+      $("dIface").textContent = `${e.device.productName || "HID"} · usagePage 0x${c ? c.usagePage.toString(16) : "?"} usage ${c ? c.usage : "?"}`;
+      log(`Data masuk dari antarmuka: ${$("dIface").textContent} (${reportLenSeen}).`, "ok");
+    } else if (e.device !== activeDev) return;
+
+    const pkt = new Uint8Array(bytes); // copy, browser may reuse buffer
+
+    if (phase === "calibrating") {
+      cal.push(pkt);
+      setStatus(`Mengumpulkan paket ${cal.length}/${CAL_N}`, "busy");
+      if (cal.length >= CAL_N) resolveKey();
+      return;
+    }
+    if (phase !== "locked") return;
+    handlePacket(pkt);
+  }
+
+  async function resolveKey() {
+    phase = "searching";
+    cancelSearch = false;
+    const userSuffix = C.suffixFromSerial($("serial").value);
+    setStatus("Mencari kunci AES…", "busy");
+    log(userSuffix ? `Menguji kunci dari serial berakhiran ${userSuffix}…` : "Serial tidak diisi. Mencari kunci otomatis (angka dulu, lalu huruf+angka)…");
+    setProgress(0);
+    const t0 = performance.now();
+    const found = await C.searchKey(cal, {
+      preferSuffix: userSuffix,
+      isCancelled: () => cancelSearch,
+      onProgress: f => setProgress(f)
+    });
+    setProgress(null);
+    if (cancelSearch) return;
+    if (!found) {
+      phase = "failed";
+      setStatus("Kunci tidak ditemukan", "err");
+      $("mKey").textContent = "gagal"; $("mKey").className = "v bad";
+      log("Tidak ada kunci yang membuat counter teratur. Kemungkinan: firmware memakai skema kunci lain, atau paket berasal dari antarmuka yang salah. Kirimkan isi diagnostik/hex kepada pengembang.", "err");
+      showHexRaw();
+      return;
+    }
+    keyInfo = found;
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    if (userSuffix && found.suffix !== userSuffix) log(`Serial yang diisi (…${userSuffix}) tidak cocok. Kunci yang benar ditemukan dari data.`, "warn");
+    log(`Kunci ditemukan dalam ${secs} s: skema ${found.schedule.name}, serial berakhiran …${found.suffix}, kontinuitas ${(found.frac * 100).toFixed(0)}% (step ${found.step}).`, "ok");
+    $("mKey").textContent = "…" + found.suffix; $("mKey").className = "v good";
+    $("dKey").textContent = `${C.hex(found.key, " ")}  (${found.schedule.name}, ASCII "${String.fromCharCode(...found.key).replace(/[^\x20-\x7e]/g, ".")}")`;
+    if (found.schedule.id === "legacy") {
+      log("Headset tampaknya dalam mode EPOC legacy (14-bit). Dekode EEG di app ini untuk mode EPOC X/EPOC+. Ubah mode headset di Emotiv Launcher bila data tampak janggal.", "warn");
+    }
+    C.setKey(found.key);
+    phase = "locked";
+    setStatus("Streaming · kunci OK", "on");
+    $("recBtn").disabled = false; $("clearBtn").disabled = false;
+    // replay calibration packets so the scope has data immediately
+    for (const p of cal) handlePacket(p);
+  }
+
+  function showHexRaw() {
+    const lines = cal.slice(0, 8).map((p, i) => `#${i}  ${C.hex(p, " ")}  (terenkripsi)`);
+    $("dHex").textContent = lines.join("\n") || "Belum ada paket.";
+  }
+
+  function handlePacket(pkt) {
+    C.decryptPacket(pkt, dec);
+    const counter = dec[0], type = dec[1];
+
+    // packet type statistics -> dominant type is EEG
+    typeHist.set(type, (typeHist.get(type) || 0) + 1);
+    let total = 0, best = null, bestN = 0;
+    for (const [t, n] of typeHist) { total += n; if (n > bestN) { bestN = n; best = t; } }
+    dominantType = (total >= 32 && bestN / total >= 0.6) ? best : null;
+
+    // continuity tracking (all packets)
+    recentCounters.push(counter);
+    if (recentCounters.length > 128) recentCounters.shift();
+    lastCounter = counter;
+
+    lastHex.push(`c=${String(counter).padStart(3)} t=${String(type).padStart(3)} | ${C.hex(dec, " ")}`);
+    if (lastHex.length > 8) lastHex.shift();
+
+    const isEEG = dominantType === null || type === dominantType;
+    if (!isEEG) return;
+
+    C.decodeEEG(dec, uv);
+    eegCount++;
+    for (let ch = 0; ch < NCH; ch++) scope[ch][head] = uv[ch];
+    head = (head + 1) % SCOPE_LEN; if (filled < SCOPE_LEN) filled++;
+
+    if (recording) {
+      const t = ((performance.now() - recStart) / 1000).toFixed(4);
+      const row = [t, counter];
+      for (let ch = 0; ch < NCH; ch++) row.push(uv[ch].toFixed(3));
+      rec.push(row.join(","));
+      recRaw.push(C.hex(pkt));
+    }
+  }
+
+  // ---- recording ----
+  function startRec() {
+    if (phase !== "locked") { log("Kunci belum ditemukan. Belum bisa merekam.", "err"); return; }
+    rec = []; recRaw = []; recStart = performance.now(); recording = true;
+    $("recChip").className = "status-chip rec"; $("recText").textContent = "Merekam";
+    $("recBtn").textContent = "■ Stop rekam"; $("recBtn").classList.remove("rec");
+    $("saveBtn").disabled = true; $("saveRawBtn").disabled = true; $("copyBtn").disabled = true;
+    log("Mulai merekam.", "ok");
+  }
+  function stopRec() {
+    recording = false;
+    $("recChip").className = "status-chip"; $("recText").textContent = "Siaga";
+    $("recBtn").textContent = "● Mulai rekam"; $("recBtn").classList.add("rec");
+    $("saveBtn").disabled = rec.length === 0; $("saveRawBtn").disabled = rec.length === 0;
+    log(`Berhenti merekam: ${rec.length} sampel.`, "ok");
+  }
+  $("recBtn").addEventListener("click", () => recording ? stopRec() : startRec());
+  $("clearBtn").addEventListener("click", () => {
+    rec = []; recRaw = []; currentText = "";
+    $("saveBtn").disabled = true; $("saveRawBtn").disabled = true; $("copyBtn").disabled = true;
+    $("outArea").hidden = true; $("outArea").value = "";
+    $("mSamples").textContent = "0"; $("mDur").innerHTML = "0.0<small> s</small>"; $("mSize").innerHTML = "0<small> KB</small>";
+    log("Buffer dikosongkan.");
+  });
+
+  // ---- export ----
+  let currentText = "";
+  const stamp = () => new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  function tryDownload(name, text) {
+    try {
+      const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+      const a = document.createElement("a"); a.href = url; a.download = name;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    } catch (_) {}
+  }
+  function present(text, name) {
+    currentText = text;
+    const ta = $("outArea");
+    ta.hidden = false;
+    ta.value = text.length > 400000 ? text.slice(0, 400000) + "\n… (tampilan dipotong; salin/unduh tetap lengkap)" : text;
+    $("copyBtn").disabled = false;
+    tryDownload(name, text);
+    $("dlHint").innerHTML = `Siap: <strong>${name}</strong> (${rec.length} baris). Jika unduhan tidak muncul, klik “Salin ke clipboard” lalu simpan sebagai berkas.`;
+  }
+  $("saveBtn").addEventListener("click", () => {
+    if (!rec.length) return;
+    const meta = keyInfo ? `# EPOC X raw via WebHID; key scheme ${keyInfo.schedule.name}; serial suffix ${keyInfo.suffix}; uV = 4201.0256 + 0.128205*(raw-32768)\n` : "";
+    present(meta + ["t_s", "counter", ...CHANNELS].join(",") + "\n" + rec.join("\n") + "\n", `epocx_${stamp()}.csv`);
+  });
+  $("saveRawBtn").addEventListener("click", () => {
+    if (!recRaw.length) return;
+    present(recRaw.join("\n") + "\n", `epocx_encrypted_${stamp()}.txt`);
+  });
+  $("copyBtn").addEventListener("click", async () => {
+    if (!currentText) return;
+    try { await navigator.clipboard.writeText(currentText); $("dlHint").textContent = "Tersalin ke clipboard. Tempel ke editor teks lalu simpan sebagai berkas."; }
+    catch (_) { const ta = $("outArea"); ta.hidden = false; ta.focus(); ta.select(); $("dlHint").textContent = "Clipboard ditolak browser. Teks sudah diseleksi, tekan Ctrl/Cmd+C."; }
+  });
+
+  $("connectBtn").addEventListener("click", connect);
+  $("disconnectBtn").addEventListener("click", disconnect);
+  $("rescanBtn").addEventListener("click", () => {
+    if (!hidDevs.length) return;
+    cancelSearch = true;
+    if (recording) stopRec();
+    const keepDev = activeDev;
+    resetStream(); activeDev = keepDev;
+    phase = "calibrating";
+    $("recBtn").disabled = true;
+    setStatus("Mengumpulkan paket…", "busy");
+    log("Mengumpulkan ulang paket untuk mencari kunci.");
+  });
+
+  // ---- scope ----
+  const canvas = $("scope"), ctx = canvas.getContext("2d");
+  const H = 420;
+  function sizeCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, canvas.clientWidth * dpr); canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", sizeCanvas);
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  function draw() {
+    const w = canvas.clientWidth, laneH = H / NCH;
+    ctx.clearRect(0, 0, w, H);
+    const trace = cssVar("--trace"), line = cssVar("--line"), soft = cssVar("--ink-soft");
+    ctx.font = "10px ui-monospace, monospace"; ctx.textBaseline = "middle";
+    const n = filled, plotX = 42, plotW = w - plotX - 4;
+    for (let ch = 0; ch < NCH; ch++) {
+      const yMid = laneH * ch + laneH / 2;
+      ctx.strokeStyle = line; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(plotX, yMid); ctx.lineTo(w, yMid); ctx.stroke();
+      ctx.fillStyle = soft; ctx.fillText(CHANNELS[ch], 4, yMid);
+      if (n < 2) continue;
+      const data = scope[ch];
+      let mean = 0;
+      for (let i = 0; i < n; i++) mean += data[(head - n + i + SCOPE_LEN) % SCOPE_LEN];
+      mean /= n;
+      let peak = 1;
+      for (let i = 0; i < n; i++) { const v = Math.abs(data[(head - n + i + SCOPE_LEN) % SCOPE_LEN] - mean); if (v > peak) peak = v; }
+      const amp = laneH * 0.45 / peak;
+      ctx.strokeStyle = trace; ctx.lineWidth = 1; ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const v = data[(head - n + i + SCOPE_LEN) % SCOPE_LEN] - mean;
+        const x = plotX + (i / (SCOPE_LEN - 1)) * plotW, y = yMid - v * amp;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = soft; ctx.textAlign = "right";
+      ctx.fillText(`±${peak < 1000 ? peak.toFixed(0) : (peak / 1000).toFixed(1) + "k"} µV`, w - 6, yMid - laneH * 0.32);
+      ctx.textAlign = "left";
+    }
+    requestAnimationFrame(draw);
+  }
+
+  // ---- metrics ----
+  let lastUi = 0;
+  function tick(now) {
+    if (now - rateT >= 1000) { rate = Math.round(eegCount * 1000 / (now - rateT)); eegCount = 0; rateT = now; }
+    if (now - lastUi > 200) {
+      lastUi = now;
+      const live = phase === "locked";
+      $("mRate").innerHTML = live ? `${rate}<small> /s</small>` : "—";
+      $("mCounter").textContent = live && lastCounter != null ? lastCounter : "—";
+      if (live && recentCounters.length > 8) {
+        const m = C.modeDiff(Uint8Array.from(recentCounters));
+        const pct = Math.round(m.frac * 100);
+        const el = $("mCont");
+        el.innerHTML = `${pct}<small> %</small>`;
+        el.className = "v " + (pct >= 80 ? "good" : pct >= 40 ? "warn" : "bad");
+      } else { $("mCont").textContent = "—"; $("mCont").className = "v"; }
+      if (live) {
+        $("dHex").textContent = lastHex.join("\n") || "Belum ada paket.";
+        const parts = [...typeHist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t, n]) => `${t}: ${n}`);
+        $("dTypes").textContent = parts.join(" · ") + (dominantType !== null ? `  → EEG = ${dominantType}` : "  (belum dominan, semua dianggap EEG)");
+      }
+      if (recording) {
+        $("mSamples").textContent = rec.length;
+        $("mDur").innerHTML = ((now - recStart) / 1000).toFixed(1) + "<small> s</small>";
+        const kb = Math.round(rec.length * 120 / 1024);
+        $("mSize").innerHTML = kb > 1024 ? (kb / 1024).toFixed(1) + "<small> MB</small>" : kb + "<small> KB</small>";
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  sizeCanvas();
+  requestAnimationFrame(draw);
+  requestAnimationFrame(tick);
+  log("Siap. Klik “Hubungkan dongle” dan pilih perangkat Emotiv (EEG Signals).");
+})();
+</script>
+
+</body></html>
